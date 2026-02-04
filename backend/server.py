@@ -16,6 +16,11 @@ from encryption import EncryptionManager
 from dns_handler import DNSHandler
 from traffic_analyzer import TrafficAnalyzer
 from threat_detector import threat_detector
+from database import init_db, get_db, User, TestResult, Report, AuditLog
+from auth import AuthManager, token_required, role_required
+from rate_limiter import rate_limiter
+from alert_handler import threat_alert_handler, security_alert_handler
+from report_generator import report_generator
 from pentesting.sql_tester import SQLTester
 from pentesting.xss_tester import XSSTester
 from pentesting.port_scanner import PortScanner
@@ -34,6 +39,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Initialize database
+try:
+    init_db()
+except Exception as e:
+    logger.warning(f"Database initialization skipped: {e}")
+
 # Initialize core components
 encryption_manager = EncryptionManager()
 dns_handler = DNSHandler()
@@ -51,6 +62,128 @@ request_interceptor = RequestInterceptor()
 # Global state
 vpn_active = False
 kill_switch_enabled = False
+
+
+# ==================== Rate Limiting Middleware ====================
+
+@app.before_request
+def apply_rate_limit():
+    """Apply rate limiting to all requests"""
+    # Skip for auth and health endpoints
+    if request.path in ['/api/auth/login', '/api/auth/register', '/api/health']:
+        return
+    
+    identifier = request.remote_addr or 'unknown'
+    if not rate_limiter.is_allowed(identifier):
+        return jsonify({'error': 'Rate limit exceeded', 'retry_after': 60}), 429
+
+
+# ==================== Authentication Routes ====================
+
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    """Register new user"""
+    data = request.json
+    username = data.get('username')
+    email = data.get('email')
+    password = data.get('password')
+    
+    if not all([username, email, password]):
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    try:
+        db = next(get_db())
+        auth_manager = AuthManager(db)
+        result = auth_manager.register_user(username, email, password)
+        
+        if result['success']:
+            return jsonify(result), 201
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f"Registration error: {e}")
+        return jsonify({'error': 'Registration failed'}), 500
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    """Authenticate user"""
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not all([username, password]):
+        return jsonify({'error': 'Missing credentials'}), 400
+    
+    try:
+        db = next(get_db())
+        auth_manager = AuthManager(db)
+        result = auth_manager.login_user(username, password)
+        
+        if result['success']:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 401
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return jsonify({'error': 'Login failed'}), 500
+
+
+@app.route('/api/auth/user', methods=['GET'])
+@token_required
+def get_user(payload):
+    """Get current user info"""
+    try:
+        db = next(get_db())
+        auth_manager = AuthManager(db)
+        user_id = payload.get('user_id')
+        user = auth_manager.get_user(user_id)
+        
+        if user:
+            return jsonify(user), 200
+        else:
+            return jsonify({'error': 'User not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/auth/change-password', methods=['POST'])
+@token_required
+def change_password(payload):
+    """Change user password"""
+    data = request.json
+    old_password = data.get('old_password')
+    new_password = data.get('new_password')
+    
+    if not all([old_password, new_password]):
+        return jsonify({'error': 'Missing fields'}), 400
+    
+    try:
+        db = next(get_db())
+        auth_manager = AuthManager(db)
+        user_id = payload.get('user_id')
+        result = auth_manager.change_password(user_id, old_password, new_password)
+        
+        if result['success']:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ==================== VPN Routes ====================
+
+@app.before_request
+def apply_rate_limit():
+    """Apply rate limiting to all requests"""
+    # Skip for auth and health endpoints
+    if request.path in ['/api/auth/login', '/api/auth/register', '/api/health']:
+        return
+    
+    identifier = request.remote_addr or 'unknown'
+    if not rate_limiter.is_allowed(identifier):
+        return jsonify({'error': 'Rate limit exceeded', 'retry_after': 60}), 429
 
 
 # ==================== VPN Routes ====================
@@ -397,6 +530,136 @@ def record_traffic():
         return jsonify({'status': 'recorded'})
     
     return jsonify({'error': 'Missing required fields'}), 400
+
+
+# ==================== Reporting Routes ====================
+
+@app.route('/api/reports/generate', methods=['POST'])
+@token_required
+@role_required('tester')
+def generate_report(payload):
+    """Generate security report"""
+    data = request.json
+    title = data.get('title', 'Security Assessment Report')
+    test_results = data.get('test_results', [])
+    report_type = data.get('report_type', 'summary')
+    company_name = data.get('company_name', 'Security Team')
+    
+    result = report_generator.generate_report(
+        report_id=int(time.time() * 1000),
+        title=title,
+        test_results=test_results,
+        report_type=report_type,
+        company_name=company_name,
+        include_html=True,
+        include_pdf=False
+    )
+    
+    return jsonify(result), 201 if result['success'] else 500
+
+
+@app.route('/api/reports/list', methods=['GET'])
+@token_required
+def list_reports(payload):
+    """List all reports for user"""
+    try:
+        db = next(get_db())
+        user_id = payload.get('user_id')
+        
+        reports = db.query(Report).filter(Report.user_id == user_id).all()
+        
+        return jsonify({
+            'reports': [
+                {
+                    'id': r.id,
+                    'title': r.title,
+                    'created_at': r.created_at.isoformat(),
+                    'vulnerabilities': r.total_vulnerabilities
+                }
+                for r in reports
+            ]
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ==================== Database Routes ====================
+
+@app.route('/api/database/test-results', methods=['POST'])
+@token_required
+@role_required('tester')
+def save_test_result(payload):
+    """Save test result to database"""
+    data = request.json
+    
+    try:
+        db = next(get_db())
+        user_id = payload.get('user_id')
+        
+        test_result = TestResult(
+            user_id=user_id,
+            test_type=data.get('test_type'),
+            target=data.get('target'),
+            status=data.get('status', 'completed'),
+            result=data.get('result'),
+            vulnerabilities_found=data.get('vulnerabilities_found', 0),
+            severity=data.get('severity', 'LOW'),
+            notes=data.get('notes')
+        )
+        
+        db.add(test_result)
+        db.commit()
+        
+        return jsonify({'id': test_result.id, 'message': 'Test result saved'}), 201
+    except Exception as e:
+        logger.error(f"Error saving test result: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/database/audit-logs', methods=['GET'])
+@token_required
+@role_required('admin')
+def get_audit_logs(payload):
+    """Get audit logs"""
+    try:
+        db = next(get_db())
+        limit = request.args.get('limit', 100, type=int)
+        
+        logs = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit).all()
+        
+        return jsonify({
+            'logs': [
+                {
+                    'id': l.id,
+                    'action': l.action,
+                    'resource': l.resource,
+                    'status': l.status,
+                    'timestamp': l.timestamp.isoformat(),
+                    'ip_address': l.ip_address
+                }
+                for l in logs
+            ]
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ==================== Alert Routes ====================
+
+@app.route('/api/alerts/threat', methods=['GET'])
+def get_threat_alerts():
+    """Get recent threat alerts"""
+    limit = request.args.get('limit', 50, type=int)
+    alerts = threat_alert_handler.get_alerts(limit)
+    return jsonify({'alerts': alerts}), 200
+
+
+@app.route('/api/alerts/security', methods=['GET'])
+def get_security_alerts():
+    """Get recent security test alerts"""
+    limit = request.args.get('limit', 50, type=int)
+    alerts = security_alert_handler.get_alerts(limit)
+    return jsonify({'alerts': alerts}), 200
 
 
 # ==================== Error Handlers ====================

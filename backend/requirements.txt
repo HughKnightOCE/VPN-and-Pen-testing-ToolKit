@@ -6,3 +6,6 @@ requests
 python-dotenv
 psutil
 colorama
+sqlalchemy
+pyjwt
+reportlab
