@@ -676,5 +676,33 @@ def internal_error(error):
 
 if __name__ == '__main__':
     logger.info("Starting VPN Proxy + Pentesting Toolkit Backend")
-    logger.info("Server running on http://localhost:5000")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    
+    # Get configuration from environment
+    ssl_enabled = os.getenv('SSL_ENABLED', 'False').lower() == 'true'
+    ssl_cert = os.getenv('SSL_CERT_PATH', './certs/server.crt')
+    ssl_key = os.getenv('SSL_KEY_PATH', './certs/server.key')
+    server_host = os.getenv('SERVER_HOST', '0.0.0.0')
+    server_port = int(os.getenv('SERVER_PORT', '5000'))
+    
+    # Prepare SSL context if enabled
+    ssl_context = None
+    protocol = 'https' if ssl_enabled else 'http'
+    
+    if ssl_enabled:
+        try:
+            import ssl
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_context.load_cert_chain(ssl_cert, ssl_key)
+            logger.info(f"SSL/TLS enabled with cert: {ssl_cert}")
+        except Exception as e:
+            logger.warning(f"Failed to load SSL certificates: {e}")
+            logger.warning("Running without SSL/TLS")
+            ssl_context = None
+    
+    logger.info(f"Server running on {protocol}://{server_host}:{server_port}")
+    
+    # Run server with SSL if configured
+    if ssl_context:
+        app.run(host=server_host, port=server_port, debug=False, ssl_context=ssl_context)
+    else:
+        app.run(host=server_host, port=server_port, debug=False)

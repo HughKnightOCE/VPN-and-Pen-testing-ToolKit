@@ -7,8 +7,28 @@ import logging
 from datetime import datetime
 from typing import Dict, List
 import json
+import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import requests
 
 logger = logging.getLogger(__name__)
+
+
+# Load environment variables
+SMTP_ENABLED = os.getenv('SMTP_ENABLED', 'False').lower() == 'true'
+SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
+SMTP_USERNAME = os.getenv('SMTP_USERNAME', '')
+SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', '')
+SMTP_FROM_ADDRESS = os.getenv('SMTP_FROM_ADDRESS', 'alerts@vpn-toolkit.com')
+ALERT_EMAIL_RECIPIENTS = os.getenv('ALERT_EMAIL_RECIPIENTS', '').split(',')
+
+SLACK_ENABLED = os.getenv('SLACK_ENABLED', 'False').lower() == 'true'
+SLACK_WEBHOOK_URL = os.getenv('SLACK_WEBHOOK_URL', '')
+SLACK_CHANNEL = os.getenv('SLACK_CHANNEL', '#security-alerts')
+SLACK_USERNAME = os.getenv('SLACK_USERNAME', 'VPN Toolkit Bot')
 
 
 class AlertHandler:
@@ -16,8 +36,8 @@ class AlertHandler:
     
     def __init__(self):
         self.alerts_sent = []
-        self.email_enabled = False  # Can be enabled via config
-        self.slack_enabled = False
+        self.email_enabled = SMTP_ENABLED
+        self.slack_enabled = SLACK_ENABLED
     
     def send_alert(self, alert_type: str, severity: str, subject: str, 
                    message: str, details: Dict = None, 
@@ -74,17 +94,120 @@ class AlertHandler:
             logger.debug(f"Alert details: {json.dumps(alert.get('details'), indent=2)}")
     
     def _send_email_alert(self, alert: Dict):
-        """Send email alert (logging-based for now)"""
-        # This would integrate with actual email service
-        # For now, we log to indicate where email would be sent
-        logger.info(f"[EMAIL ALERT] Would send email: {alert.get('subject')}")
-        logger.debug(f"Email content: {alert.get('message')}")
+        """Send email alert via SMTP"""
+        try:
+            if not SMTP_ENABLED or not SMTP_USERNAME or not SMTP_PASSWORD:
+                logger.debug("SMTP not configured, skipping email alert")
+                return False
+            
+            # Create message
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = f"[{alert.get('severity')}] {alert.get('subject')}"
+            msg['From'] = SMTP_FROM_ADDRESS
+            msg['To'] = ', '.join([e.strip() for e in ALERT_EMAIL_RECIPIENTS if e.strip()])
+            
+            # Create HTML body
+            html_body = f"""
+            <html>
+                <body style="font-family: Arial, sans-serif;">
+                    <h2 style="color: #d32f2f;">{alert.get('subject')}</h2>
+                    <p><strong>Severity:</strong> {alert.get('severity')}</p>
+                    <p><strong>Type:</strong> {alert.get('type')}</p>
+                    <p><strong>Time:</strong> {alert.get('timestamp')}</p>
+                    <p><strong>Message:</strong></p>
+                    <p>{alert.get('message')}</p>
+                    <hr>
+                    <p><strong>Details:</strong></p>
+                    <pre>{json.dumps(alert.get('details', {}), indent=2)}</pre>
+                    <hr>
+                    <p><em>This is an automated alert from VPN Proxy + Pentesting Toolkit</em></p>
+                </body>
+            </html>
+            """
+            
+            msg.attach(MIMEText(html_body, 'html'))
+            
+            # Send email
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                server.starttls()
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(msg)
+            
+            logger.info(f"[EMAIL] Alert sent successfully: {alert.get('subject')}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[EMAIL] Failed to send alert: {e}")
+            return False
     
     def _send_slack_alert(self, alert: Dict):
-        """Send Slack alert (logging-based for now)"""
-        # This would integrate with Slack webhook
-        # For now, we log to indicate where Slack message would be sent
-        logger.info(f"[SLACK ALERT] Would send Slack message: {alert.get('subject')}")
+        """Send Slack alert via webhook"""
+        try:
+            if not SLACK_ENABLED or not SLACK_WEBHOOK_URL:
+                logger.debug("Slack not configured, skipping Slack alert")
+                return False
+            
+            # Map severity to color
+            color_map = {
+                'CRITICAL': '#d32f2f',  # Red
+                'HIGH': '#f57c00',      # Orange
+                'MEDIUM': '#fbc02d',    # Yellow
+                'LOW': '#388e3c'        # Green
+            }
+            color = color_map.get(alert.get('severity', 'LOW'), '#757575')
+            
+            # Create Slack message
+            payload = {
+                'channel': SLACK_CHANNEL,
+                'username': SLACK_USERNAME,
+                'attachments': [
+                    {
+                        'color': color,
+                        'title': alert.get('subject'),
+                        'text': alert.get('message'),
+                        'fields': [
+                            {
+                                'title': 'Type',
+                                'value': alert.get('type'),
+                                'short': True
+                            },
+                            {
+                                'title': 'Severity',
+                                'value': alert.get('severity'),
+                                'short': True
+                            },
+                            {
+                                'title': 'Timestamp',
+                                'value': alert.get('timestamp'),
+                                'short': False
+                            }
+                        ],
+                        'footer': 'VPN Proxy + Pentesting Toolkit'
+                    }
+                ]
+            }
+            
+            # If there are details, add them as additional field
+            if alert.get('details'):
+                payload['attachments'][0]['fields'].append({
+                    'title': 'Details',
+                    'value': '```' + json.dumps(alert.get('details'), indent=2) + '```',
+                    'short': False
+                })
+            
+            # Send to Slack
+            response = requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
+            
+            if response.status_code == 200:
+                logger.info(f"[SLACK] Alert sent successfully: {alert.get('subject')}")
+                return True
+            else:
+                logger.error(f"[SLACK] Failed to send alert: HTTP {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[SLACK] Failed to send alert: {e}")
+            return False
     
     def get_alerts(self, limit: int = 100, 
                    alert_type: str = None, 
