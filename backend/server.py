@@ -15,6 +15,7 @@ from proxy import SOCKSProxyServer
 from encryption import EncryptionManager
 from dns_handler import DNSHandler
 from traffic_analyzer import TrafficAnalyzer
+from threat_detector import threat_detector
 from pentesting.sql_tester import SQLTester
 from pentesting.xss_tester import XSSTester
 from pentesting.port_scanner import PortScanner
@@ -321,6 +322,81 @@ def get_vpn_uptime():
     if not vpn_active or not proxy_server:
         return 0
     return proxy_server.get_uptime()
+
+
+# ==================== Threat Detection Routes ====================
+
+@app.route('/api/threats/status', methods=['GET'])
+def get_threat_status():
+    """Get current threat status"""
+    return jsonify(threat_detector.get_threat_status())
+
+
+@app.route('/api/threats/alerts', methods=['GET'])
+def get_threats():
+    """Get threat alerts"""
+    limit = request.args.get('limit', 100, type=int)
+    threats = threat_detector.get_threats(limit)
+    return jsonify({'threats': threats, 'total': len(threats)})
+
+
+@app.route('/api/threats/block', methods=['POST'])
+def block_ip():
+    """Block an IP address"""
+    data = request.json
+    ip = data.get('ip')
+    reason = data.get('reason', 'Manual block')
+    action = data.get('action', 'block')
+    
+    if not ip:
+        return jsonify({'error': 'IP address required'}), 400
+    
+    if action == 'block':
+        threat_detector.block_ip(ip, reason)
+        return jsonify({'status': 'success', 'message': f'Blocked {ip}'})
+    elif action == 'unblock':
+        if threat_detector.unblock_ip(ip):
+            return jsonify({'status': 'success', 'message': f'Unblocked {ip}'})
+        else:
+            return jsonify({'error': 'IP not in blocklist'}), 400
+    else:
+        return jsonify({'error': 'Invalid action'}), 400
+
+
+@app.route('/api/threats/blocked-ips', methods=['GET'])
+def get_blocked_ips():
+    """Get list of blocked IPs"""
+    return jsonify({'blocked_ips': list(threat_detector.blocked_ips)})
+
+
+@app.route('/api/threats/record-failed-connection', methods=['POST'])
+def record_failed_connection():
+    """Record a failed connection attempt"""
+    data = request.json
+    source_ip = data.get('source_ip')
+    destination_ip = data.get('destination_ip')
+    port = data.get('port', 0)
+    
+    if source_ip and destination_ip:
+        threat_detector.record_failed_connection(source_ip, destination_ip, port)
+        return jsonify({'status': 'recorded'})
+    
+    return jsonify({'error': 'Missing required fields'}), 400
+
+
+@app.route('/api/threats/record-traffic', methods=['POST'])
+def record_traffic():
+    """Record traffic for analysis"""
+    data = request.json
+    source_ip = data.get('source_ip')
+    destination_ip = data.get('destination_ip')
+    bytes_sent = data.get('bytes_sent', 0)
+    
+    if source_ip and destination_ip:
+        threat_detector.record_traffic(source_ip, destination_ip, bytes_sent)
+        return jsonify({'status': 'recorded'})
+    
+    return jsonify({'error': 'Missing required fields'}), 400
 
 
 # ==================== Error Handlers ====================

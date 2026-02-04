@@ -3,6 +3,7 @@ import axios from 'axios'
 import VPNControl from './components/VPNControl'
 import TrafficMonitor from './components/TrafficMonitor'
 import PentestTools from './components/PentestTools'
+import ThreatPanel from './components/ThreatPanel'
 import Settings from './components/Settings'
 import './App.css'
 
@@ -41,6 +42,12 @@ function App() {
           Traffic Monitor
         </button>
         <button 
+          className={`nav-btn ${activeTab === 'threats' ? 'active' : ''}`}
+          onClick={() => setActiveTab('threats')}
+        >
+          🛡️ Threats
+        </button>
+        <button 
           className={`nav-btn ${activeTab === 'pentest' ? 'active' : ''}`}
           onClick={() => setActiveTab('pentest')}
         >
@@ -64,6 +71,7 @@ function App() {
           <>
             {activeTab === 'vpn' && <VPNControl />}
             {activeTab === 'traffic' && <TrafficMonitor />}
+            {activeTab === 'threats' && <ThreatPanel />}
             {activeTab === 'pentest' && <PentestTools />}
             {activeTab === 'settings' && <Settings />}
           </>

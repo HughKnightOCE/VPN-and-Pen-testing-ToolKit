@@ -1,0 +1,36 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+venv/
+env/
+*.env
+.DS_Store
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# Node/Frontend
+node_modules/
+dist/
+npm-debug.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Data
+data/
+*.db
+*.sqlite
