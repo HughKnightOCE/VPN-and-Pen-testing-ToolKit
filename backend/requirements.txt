@@ -1,0 +1,8 @@
+flask
+flask-cors
+cryptography
+dnspython
+requests
+python-dotenv
+psutil
+colorama
